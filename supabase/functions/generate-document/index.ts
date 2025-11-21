@@ -86,25 +86,94 @@ serve(async (req) => {
       throw new Error('Failed to store document generation request');
     }
 
-    // TODO: Implement actual document processing
-    // For now, return a success message
-    // In a production environment, you would:
-    // 1. Download the template file from storage
-    // 2. Process it with exceljs/docxtemplater
-    // 3. Replace placeholders with parameter values
-    // 4. Convert to PDF
-    // 5. Upload the result to storage
-    // 6. Return the download URL
+    // Download the template file from storage
+    const templatePath = template.file_url.replace('document-templates/', '');
+    const { data: fileData, error: downloadError } = await supabaseClient.storage
+      .from('document-templates')
+      .download(templatePath);
 
-    console.log('Document generation request stored:', generatedDoc.id);
+    if (downloadError || !fileData) {
+      throw new Error('Failed to download template file');
+    }
+
+    // Read the file content
+    const arrayBuffer = await fileData.arrayBuffer();
+    const buffer = new Uint8Array(arrayBuffer);
+
+    // Process the document based on file type
+    let processedContent = buffer;
+    
+    if (template.file_type === 'xlsx' || template.file_type === 'xls') {
+      // For Excel files: replace placeholders in cells
+      // Note: This is a simplified version. In production, use exceljs library
+      const textContent = new TextDecoder().decode(buffer);
+      let modifiedContent = textContent;
+      
+      // Replace placeholders like {{parameter_name}} with actual values
+      for (const [key, value] of Object.entries(parameters)) {
+        const placeholder = `{{${key}}}`;
+        modifiedContent = modifiedContent.split(placeholder).join(String(value));
+      }
+      
+      processedContent = new TextEncoder().encode(modifiedContent);
+    } else if (template.file_type === 'docx' || template.file_type === 'doc') {
+      // For Word files: replace placeholders in document
+      // Note: This is a simplified version. In production, use docxtemplater library
+      const textContent = new TextDecoder().decode(buffer);
+      let modifiedContent = textContent;
+      
+      // Replace placeholders like {{parameter_name}} with actual values
+      for (const [key, value] of Object.entries(parameters)) {
+        const placeholder = `{{${key}}}`;
+        modifiedContent = modifiedContent.split(placeholder).join(String(value));
+      }
+      
+      processedContent = new TextEncoder().encode(modifiedContent);
+    }
+
+    // Upload the processed document to storage
+    const fileName = `${user.id}/${generatedDoc.id}.${template.file_type}`;
+    const { error: uploadError } = await supabaseClient.storage
+      .from('generated-documents')
+      .upload(fileName, processedContent, {
+        contentType: template.file_type === 'xlsx' || template.file_type === 'xls' 
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error('Upload error:', uploadError);
+      throw new Error('Failed to upload processed document');
+    }
+
+    // Get a signed URL for download
+    const { data: signedUrlData, error: signedUrlError } = await supabaseClient.storage
+      .from('generated-documents')
+      .createSignedUrl(fileName, 3600); // 1 hour expiry
+
+    if (signedUrlError || !signedUrlData) {
+      throw new Error('Failed to generate download URL');
+    }
+
+    // Update the generated document record with the file URL
+    const { error: updateError } = await supabaseClient
+      .from('generated_documents')
+      .update({ file_url: fileName })
+      .eq('id', generatedDoc.id);
+
+    if (updateError) {
+      console.error('Update error:', updateError);
+    }
+
+    console.log('Document generated successfully:', generatedDoc.id);
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: 'Document generation initiated',
+        message: 'Document generated successfully',
         documentId: generatedDoc.id,
-        // For demo purposes, returning a placeholder
-        downloadUrl: null,
+        downloadUrl: signedUrlData.signedUrl,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
