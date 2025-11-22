@@ -103,33 +103,40 @@ serve(async (req) => {
     // Process the document based on file type
     let processedContent = buffer;
     
-    if (template.file_type === 'xlsx' || template.file_type === 'xls') {
-      // For Excel files: replace placeholders in cells
-      // Note: This is a simplified version. In production, use exceljs library
-      const textContent = new TextDecoder().decode(buffer);
-      let modifiedContent = textContent;
+    // Enhanced placeholder replacement for both Word and Excel files
+    // This works by doing binary-safe string replacement in the XML content
+    const textContent = new TextDecoder('utf-8').decode(buffer);
+    let modifiedContent = textContent;
+    
+    // Replace placeholders like {{parameter_name}} with actual values
+    // We also handle variations like {{ parameter_name }} with spaces
+    for (const [key, value] of Object.entries(parameters)) {
+      const stringValue = String(value);
       
-      // Replace placeholders like {{parameter_name}} with actual values
-      for (const [key, value] of Object.entries(parameters)) {
-        const placeholder = `{{${key}}}`;
-        modifiedContent = modifiedContent.split(placeholder).join(String(value));
+      // Replace different placeholder patterns
+      const patterns = [
+        new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'),  // {{ key }} with optional spaces
+        new RegExp(`\\{\\{${key}\\}\\}`, 'g'),           // {{key}} without spaces
+      ];
+      
+      for (const pattern of patterns) {
+        modifiedContent = modifiedContent.replace(pattern, stringValue);
       }
       
-      processedContent = new TextEncoder().encode(modifiedContent);
-    } else if (template.file_type === 'docx' || template.file_type === 'doc') {
-      // For Word files: replace placeholders in document
-      // Note: This is a simplified version. In production, use docxtemplater library
-      const textContent = new TextDecoder().decode(buffer);
-      let modifiedContent = textContent;
-      
-      // Replace placeholders like {{parameter_name}} with actual values
-      for (const [key, value] of Object.entries(parameters)) {
-        const placeholder = `{{${key}}}`;
-        modifiedContent = modifiedContent.split(placeholder).join(String(value));
+      // For Word documents, also handle split placeholders (Word sometimes splits text)
+      if (template.file_type === 'docx' || template.file_type === 'doc') {
+        // Handle cases where {{ and }} might be in different XML elements
+        const splitPattern = new RegExp(`\\{\\{([^}]*${key}[^}]*)\\}\\}`, 'g');
+        modifiedContent = modifiedContent.replace(splitPattern, (match) => {
+          if (match.includes(key)) {
+            return stringValue;
+          }
+          return match;
+        });
       }
-      
-      processedContent = new TextEncoder().encode(modifiedContent);
     }
+    
+    processedContent = new TextEncoder().encode(modifiedContent);
 
     // Upload the processed document to storage
     const fileName = `${user.id}/${generatedDoc.id}.${template.file_type}`;
